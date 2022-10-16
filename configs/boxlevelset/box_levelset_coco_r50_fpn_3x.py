@@ -1,13 +1,13 @@
 model = dict(
     type='BoxLevelSet',
-    pretrained='https://download.pytorch.org/models/resnet50-11ad3fa6.pth',
     backbone=dict(
         type='ResNet',
-        depth=50, #网络层数
-        num_stages=4, #resnet的stage数量
-        out_indices=(0, 1, 2, 3), # C2, C3, C4, C5 输出的stage的序号
-        frozen_stages=1, #冻结的stage数量，即该stage不更新参数，-1表示所有的stage都更新参数
-        style='pytorch'),
+        depth=50, 
+        num_stages=4, 
+        out_indices=(0, 1, 2, 3), # C2, C3, C4, C5 
+        frozen_stages=1, 
+        style='pytorch',
+        init_cfg=dict(type='Pretrained', checkpoint='https://download.pytorch.org/models/resnet50-11ad3fa6.pth')),
     neck=dict(
         type='FPN',
         in_channels=[256, 512, 1024, 2048],
@@ -73,7 +73,7 @@ test_pipeline = [
         img_scale=(1333, 800),
         flip=False,
         transforms=[
-            dict(type='Resize', keep_ratio=True), #对输入图片进行保持宽高比的 Resize
+            dict(type='Resize', keep_ratio=True), 
             dict(type='RandomFlip'),
             dict(type='Normalize', **img_norm_cfg),
             dict(type='Pad', size_divisor=32),
@@ -83,7 +83,7 @@ test_pipeline = [
 ]
 data = dict(
     samples_per_gpu=2,
-    workers_per_gpu=2,  # 每个gpu分配的线程数
+    workers_per_gpu=2, 
     train=dict(
         type=dataset_type,
         ann_file=data_root + 'annotations/instances_train2017.json',
@@ -126,8 +126,8 @@ log_config = dict(
 runner = dict(type='EpochBasedRunner', max_epochs=36)
 evaluation = dict(interval=1, metric=['segm'])
 device_ids = range(8)
-dist_params = dict(backend='nccl') # 分布式参数
-log_level = 'INFO'  # 输出信息的完整度级别
+dist_params = dict(backend='nccl') 
+log_level = 'INFO' 
 work_dir = './work_dirs/boxsolo_coco_r50_3x'
 load_from = None
 resume_from = None

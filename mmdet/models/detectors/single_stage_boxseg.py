@@ -1,7 +1,7 @@
 import torch.nn as nn
 import torch
-from .. import builder
-from ..builder import DETECTORS
+import warnings
+from ..builder import DETECTORS, build_backbone, build_head, build_neck
 from .base import BaseDetector
 
 
@@ -14,27 +14,24 @@ class SingleStageBoxInsDetector(BaseDetector):
                  bbox_head=None,
                  train_cfg=None,
                  test_cfg=None,
-                 pretrained=None):
-        super(SingleStageBoxInsDetector, self).__init__()
-        self.backbone = builder.build_backbone(backbone)
-        if neck is not None:
-            self.neck = builder.build_neck(neck)
+                 pretrained=None,
+                 init_cfg=None):
 
-        self.bbox_head = builder.build_head(bbox_head)
+        if pretrained:
+            warnings.warn('DeprecationWarning: pretrained is deprecated, '
+                          'please use "init_cfg" instead')
+            backbone.pretrained = pretrained
+        super(SingleStageBoxInsDetector, self).__init__(init_cfg=init_cfg)
+        self.backbone = build_backbone(backbone)
+        if neck is not None:
+            self.neck = build_neck(neck)
+
+        if bbox_head is not None:
+            self.bbox_head = build_head(bbox_head)
+
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
-        self.init_weights(pretrained=pretrained)
 
-    def init_weights(self, pretrained=None):
-        super(SingleStageBoxInsDetector, self).init_weights(pretrained)
-        self.backbone.init_weights(pretrained=pretrained)
-        if self.with_neck:
-            if isinstance(self.neck, nn.Sequential):
-                for m in self.neck:
-                    m.init_weights()
-            else:
-                self.neck.init_weights()
-        self.bbox_head.init_weights()
 
     def extract_feat(self, img):
         x = self.backbone(img)

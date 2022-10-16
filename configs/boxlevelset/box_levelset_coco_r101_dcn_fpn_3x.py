@@ -1,6 +1,5 @@
 model = dict(
     type='BoxLevelSet',
-    pretrained='https://download.pytorch.org/models/resnet101-b641f3a9.pth',
     backbone=dict(
         type='ResNet',
         depth=101,
@@ -12,7 +11,8 @@ model = dict(
 	    type='DCN',
 	    deformable_groups=1,
 	    fallback_on_stride=False),
-	stage_with_dcn=(False, True, True, True)),
+	stage_with_dcn=(False, True, True, True),
+    init_cfg=dict(type='Pretrained', checkpoint='https://download.pytorch.org/models/resnet101-b641f3a9.pth')),
     neck=dict(
         type='FPN',
         in_channels=[256, 512, 1024, 2048],

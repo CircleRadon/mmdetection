@@ -643,3 +643,25 @@ class FilterAnnotations:
             f'by_box={self.by_box},' \
             f'by_mask={self.by_mask},' \
             f'always_keep={self.always_keep})'
+
+@PIPELINES.register_module()
+class GenerateBoxMask(object):
+
+    def __init__(self):
+        pass
+
+    def _generate_mask_from_box(self, results):
+        gtboxes = results['gt_bboxes'].round().astype(np.int)
+        gt_masks = np.zeros((len(gtboxes), *results['img'].shape[:2]), dtype=np.uint8)
+        for i, gtbox in enumerate(gtboxes):
+            rx0, ry0, rx1, ry1 = gtbox[0], gtbox[1], gtbox[2], gtbox[3]
+            gt_masks[i, ry0:ry1+1,rx0:rx1+1] = 1
+        gt_masks = BitmapMasks(
+            [gt_mask for gt_mask in gt_masks], *results['img'].shape[:2])
+        results['gt_masks'] = gt_masks
+        results['mask_fields'].append('gt_masks')
+        return results
+
+    def __call__(self, results):
+        results = self._generate_mask_from_box(results)
+        return results

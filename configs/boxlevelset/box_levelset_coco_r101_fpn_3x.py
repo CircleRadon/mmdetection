@@ -1,13 +1,13 @@
 model = dict(
     type='BoxLevelSet',
-    pretrained='https://download.pytorch.org/models/resnet101-b641f3a9.pth',
     backbone=dict(
         type='ResNet',
         depth=101,
         num_stages=4,
         out_indices=(0, 1, 2, 3), # C2, C3, C4, C5
         frozen_stages=1,
-        style='pytorch'),
+        style='pytorch',
+        init_cfg=dict(type='Pretrained', checkpoint='https://download.pytorch.org/models/resnet101-b641f3a9.pth')),
     neck=dict(
         type='FPN',
         in_channels=[256, 512, 1024, 2048],

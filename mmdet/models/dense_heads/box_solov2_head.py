@@ -4,15 +4,16 @@ import cv2
 import torch.nn as nn
 import torch.nn.functional as F
 from mmcv.cnn import normal_init
-from mmdet.core import multi_apply, matrix_nms, points_nms
+from mmdet.core import multi_apply, mask_matrix_nms
 from ..builder import build_loss, HEADS
 from mmcv.cnn import bias_init_with_prob, ConvModule
+from mmcv.runner import BaseModule
 import numpy as np
 from scipy import ndimage
 from mmdet.ops.tree_filter.modules.tree_filter import MinimumSpanningTree, TreeFilter2D
 
 @HEADS.register_module()
-class BoxSOLOv2Head(nn.Module):
+class BoxSOLOv2Head(BaseModule):
     def __init__(self,
                  num_classes,
                  in_channels,
@@ -155,6 +156,7 @@ class BoxSOLOv2Head(nn.Module):
         self.levelset_bottom = nn.Conv2d(self.seg_feat_channels, 5, 3, padding=1)
 
     def init_weights(self):
+        super(BoxSOLOv2Head, self).init_weights()
         for m in self.feature_convs:
             s=len(m)
             for i in range(s):
@@ -259,7 +261,10 @@ class BoxSOLOv2Head(nn.Module):
         cate_pred = self.solo_cate(cate_feat)
 
         if eval:
-            cate_pred = points_nms(cate_pred.sigmoid(), kernel=2).permute(0, 2, 3, 1)
+            cate_pred = cate_pred.sigmoid()
+            loacal_max = F.max_pool2d(cate_pred, 2, stride=1, padding=1)
+            keep_mask = local_max[:, :, :-1, :-1] == cls_scores
+            cate_pred = cate_pred * keep_mask
         return kernel_pred, cate_pred
 
     def loss(self,
@@ -573,8 +578,8 @@ class BoxSOLOv2Head(nn.Module):
         cate_labels = cate_labels[sort_inds]
 
         # Matrix NMS
-        cate_scores = matrix_nms(seg_masks, cate_labels, cate_scores,
-                                 kernel=cfg.kernel, sigma=cfg.sigma, sum_masks=sum_masks)
+        cate_scores = mask_matrix_nms(seg_masks, cate_labels, cate_scores,
+                                 kernel=cfg.kernel, sigma=cfg.sigma, mask_area=sum_masks)
 
         # filter.
         keep = cate_scores >= cfg.update_thr

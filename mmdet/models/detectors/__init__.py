@@ -44,6 +44,7 @@ from .yolact import YOLACT
 from .yolo import YOLOV3
 from .yolof import YOLOF
 from .yolox import YOLOX
+from .single_stage_boxseg import SingleStageBoxInsDetector
 from .boxlevelset import BoxLevelSet
 
 __all__ = [
@@ -55,5 +56,5 @@ __all__ = [
     'VFNet', 'DETR', 'TridentFasterRCNN', 'SparseRCNN', 'SCNet', 'SOLO',
     'SOLOv2', 'DeformableDETR', 'AutoAssign', 'YOLOF', 'CenterNet', 'YOLOX',
     'TwoStagePanopticSegmentor', 'PanopticFPN', 'QueryInst', 'LAD', 'TOOD',
-    'MaskFormer', 'DDOD', 'Mask2Former', 'BoxLevelSet'
+    'MaskFormer', 'DDOD', 'Mask2Former', 'SingleStageBoxInsDetector', 'BoxLevelSet'
 ]
