@@ -4,7 +4,7 @@ import cv2
 import torch.nn as nn
 import torch.nn.functional as F
 from mmcv.cnn import normal_init
-from mmdet.core import multi_apply, mask_matrix_nms
+from mmdet.core import InstanceData, multi_apply, mask_matrix_nms
 from ..builder import build_loss, HEADS
 from mmcv.cnn import bias_init_with_prob, ConvModule
 from mmcv.runner import BaseModule
@@ -31,8 +31,9 @@ class BoxSOLOv2Head(BaseModule):
                  conv_cfg=None,
                  norm_cfg=None,
                  use_dcn_in_tower=False,
-                 type_dcn=None):
-        super(BoxSOLOv2Head, self).__init__()
+                 type_dcn=None,
+                 init_cfg=None):
+        super(BoxSOLOv2Head, self).__init__(init_cfg=init_cfg)
         self.num_classes = num_classes
         self.seg_num_grids = num_grids
         self.cate_out_channels = self.num_classes
@@ -262,9 +263,10 @@ class BoxSOLOv2Head(BaseModule):
 
         if eval:
             cate_pred = cate_pred.sigmoid()
-            loacal_max = F.max_pool2d(cate_pred, 2, stride=1, padding=1)
-            keep_mask = local_max[:, :, :-1, :-1] == cls_scores
+            local_max = F.max_pool2d(cate_pred, (2,2), stride=1, padding=1)
+            keep_mask = local_max[:, :, :-1, :-1] == cate_pred
             cate_pred = cate_pred * keep_mask
+            cate_pred = cate_pred.permute(0, 2, 3, 1)
         return kernel_pred, cate_pred
 
     def loss(self,
@@ -494,15 +496,16 @@ class BoxSOLOv2Head(BaseModule):
             seg_pred_list = [
                 seg_preds[i][img_id].detach() for i in range(num_levels)
             ]
-            img_shape = img_metas[img_id]['img_shape']
-            scale_factor = img_metas[img_id]['scale_factor']
-            ori_shape = img_metas[img_id]['ori_shape']
 
             cate_pred_list = torch.cat(cate_pred_list, dim=0)
             seg_pred_list = torch.cat(seg_pred_list, dim=0)
 
-            result = self.get_seg_single(cate_pred_list, seg_pred_list,
-                                         featmap_size, img_shape, ori_shape, scale_factor, cfg, rescale)
+            result = self.get_seg_single(
+                cate_pred_list, 
+                seg_pred_list,
+                featmap_size,
+                img_meta=img_metas[img_id],
+                cfg=cfg)
             result_list.append(result)
         return result_list
 
@@ -511,16 +514,20 @@ class BoxSOLOv2Head(BaseModule):
                        cate_preds,
                        seg_preds,
                        featmap_size,
-                       img_shape,
-                       ori_shape,
-                       scale_factor,
-                       cfg,
-                       rescale=False,
-                       debug=False):
+                       img_meta,
+                       cfg=None):
+
+        def empty_results(results, cls_scores):
+            results.scores = cls_scores.new_ones(0)
+            results.masks = cls_scores.new_zeros(0, *results.ori_shape[:2])
+            results.labels = cls_scores.new_ones(0)
+            return results
+
         assert len(cate_preds) == len(seg_preds)
-        bbox_results = [[] for _ in range(self.num_classes)]
-        mask_results = [[] for _ in range(self.num_classes)]
-        score_results = [[] for _ in range(self.num_classes)]
+        results = InstanceData(img_meta)
+
+        img_shape = results.img_shape
+        ori_shape = results.ori_shape
 
         h, w, _ = img_shape
         upsampled_size_out = (featmap_size[0] * 4, featmap_size[1] * 4)
@@ -530,8 +537,7 @@ class BoxSOLOv2Head(BaseModule):
         cate_scores = cate_preds[inds]
 
         if len(cate_scores) == 0:
-            bbox_results = [np.zeros((0, 5)) for bbox_result in bbox_results]
-            return bbox_results, (mask_results, score_results)
+            return empty_results(resluts, cate_scores)
 
         # category labels.
         inds = inds.nonzero()
@@ -554,9 +560,7 @@ class BoxSOLOv2Head(BaseModule):
         # filter.
         keep = sum_masks > strides
         if keep.sum() == 0:
-            bbox_results = [np.zeros((0, 5)) for bbox_result in bbox_results]
-            return bbox_results, (mask_results, score_results)
-
+            return empty_results(results, cate_scores)
         seg_masks = seg_masks[keep, ...]
         seg_preds = seg_preds[keep, ...]
         sum_masks = sum_masks[keep]
@@ -567,38 +571,19 @@ class BoxSOLOv2Head(BaseModule):
         seg_scores = (seg_preds * seg_masks.float()).sum((1, 2)) / sum_masks
         cate_scores *= seg_scores
 
-        # sort and keep top nms_pre
-        sort_inds = torch.argsort(cate_scores, descending=True)
-        if len(sort_inds) > cfg.nms_pre:
-            sort_inds = sort_inds[:cfg.nms_pre]
-        seg_masks = seg_masks[sort_inds, :, :]
-        seg_preds = seg_preds[sort_inds, :, :]
-        sum_masks = sum_masks[sort_inds]
-        cate_scores = cate_scores[sort_inds]
-        cate_labels = cate_labels[sort_inds]
-
         # Matrix NMS
-        cate_scores = mask_matrix_nms(seg_masks, cate_labels, cate_scores,
-                                 kernel=cfg.kernel, sigma=cfg.sigma, mask_area=sum_masks)
+        scores, labels, _, keep_inds  = mask_matrix_nms(
+            seg_masks, 
+            cate_labels, 
+            cate_scores,
+            filter_thr=cfg.filter_thr,
+            nms_pre=cfg.nms_pre,
+            max_num=cfg.max_per_img,
+            kernel=cfg.kernel, 
+            sigma=cfg.sigma, 
+            mask_area=sum_masks)
 
-        # filter.
-        keep = cate_scores >= cfg.update_thr
-        if keep.sum() == 0:
-            bbox_results = [np.zeros((0, 5)) for bbox_result in bbox_results]
-            return bbox_results, (mask_results, score_results)
-
-        seg_preds = seg_preds[keep, :, :]
-        cate_scores = cate_scores[keep]
-        cate_labels = cate_labels[keep]
-
-        # sort and keep top_k
-        sort_inds = torch.argsort(cate_scores, descending=True)
-        if len(sort_inds) > cfg.max_per_img:
-            sort_inds = sort_inds[:cfg.max_per_img]
-        seg_preds = seg_preds[sort_inds, :, :]
-        cate_scores = cate_scores[sort_inds]
-        cate_labels = cate_labels[sort_inds]
-
+        seg_preds = seg_preds[keep_inds]
         seg_preds = F.interpolate(seg_preds.unsqueeze(0),
                                   size=upsampled_size_out,
                                   mode='bilinear')[:, :, :h, :w]
@@ -606,20 +591,13 @@ class BoxSOLOv2Head(BaseModule):
                                   size=ori_shape[:2],
                                   mode='bilinear').squeeze(0)
 
-        seg_masks = seg_masks > cfg.mask_thr
+        masks = seg_masks > cfg.mask_thr
 
-        for cate_label, cate_score, seg_mask in zip(cate_labels, cate_scores, seg_masks):
-            if seg_mask.sum() > 0:
-                mask_results[cate_label].append(seg_mask.cpu())
-                score_results[cate_label].append(cate_score.cpu())
-                ys, xs = torch.where(seg_mask)
-                min_x, min_y, max_x, max_y = xs.min().cpu().data.numpy(), ys.min().cpu().data.numpy(), xs.max().cpu().data.numpy(), ys.max().cpu().data.numpy()
-                bbox_results[cate_label].append([min_x, min_y, max_x+1, max_y+1, cate_score.cpu().data.numpy()])
+        results.masks = masks
+        results.labels = labels
+        results.scores = scores
 
-        bbox_results = [np.array(bbox_result) if len(bbox_result) > 0 else np.zeros((0, 5)) for bbox_result in bbox_results]
-
-        return bbox_results, (mask_results, score_results)
-
+        return results
 
 
 
