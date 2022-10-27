@@ -1699,6 +1699,5 @@ class DiscoBoxSOLOv2Head(BaseModule):
         results.masks = seg_masks
         results.labels = labels
         results.scores = cate_scores
-        print("results")
-        
+                
         return results
