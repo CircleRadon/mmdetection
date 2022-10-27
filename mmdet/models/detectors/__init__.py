@@ -46,6 +46,8 @@ from .yolof import YOLOF
 from .yolox import YOLOX
 from .single_stage_boxseg import SingleStageBoxInsDetector
 from .boxlevelset import BoxLevelSet
+from .single_stage_wsis import SingleStageWSInsDetector, SingleStageWSInsTSDetector, BoxConditionalInference
+from .discobox import DiscoBoxSOLOv2
 
 __all__ = [
     'ATSS', 'BaseDetector', 'SingleStageDetector', 'TwoStageDetector', 'RPN',
@@ -56,5 +58,7 @@ __all__ = [
     'VFNet', 'DETR', 'TridentFasterRCNN', 'SparseRCNN', 'SCNet', 'SOLO',
     'SOLOv2', 'DeformableDETR', 'AutoAssign', 'YOLOF', 'CenterNet', 'YOLOX',
     'TwoStagePanopticSegmentor', 'PanopticFPN', 'QueryInst', 'LAD', 'TOOD',
-    'MaskFormer', 'DDOD', 'Mask2Former', 'SingleStageBoxInsDetector', 'BoxLevelSet'
+    'MaskFormer', 'DDOD', 'Mask2Former', 'SingleStageBoxInsDetector', 'BoxLevelSet',
+    'SingleStageWSInsDetector', 'SingleStageWSInsTSDetector', 'BoxConditionalInference', 
+    'DiscoBoxSOLOv2'
 ]

@@ -42,6 +42,7 @@ from .yolo_head import YOLOV3Head
 from .yolof_head import YOLOFHead
 from .yolox_head import YOLOXHead
 from .box_solov2_head import BoxSOLOv2Head
+from .discobox_solov2_head import DiscoBoxSOLOv2Head, DiscoBoxMaskFeatHead
 
 __all__ = [
     'AnchorFreeHead', 'AnchorHead', 'GuidedAnchorHead', 'FeatureAdaption',
@@ -55,5 +56,6 @@ __all__ = [
     'DETRHead', 'YOLOFHead', 'DeformableDETRHead', 'SOLOHead',
     'DecoupledSOLOHead', 'CenterNetHead', 'YOLOXHead',
     'DecoupledSOLOLightHead', 'LADHead', 'TOODHead', 'MaskFormerHead',
-    'Mask2FormerHead', 'SOLOV2Head', 'DDODHead', 'BoxSOLOv2Head'
+    'Mask2FormerHead', 'SOLOV2Head', 'DDODHead', 'BoxSOLOv2Head',
+    'DiscoBoxSOLOv2Head', 'DiscoBoxMaskFeatHead'
 ]
