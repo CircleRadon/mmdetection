@@ -32,7 +32,15 @@ class BoxSOLOv2Head(BaseModule):
                  norm_cfg=None,
                  use_dcn_in_tower=False,
                  type_dcn=None,
-                 init_cfg=None):
+                 init_cfg=dict(
+                    type='Normal', 
+                    layer='Conv2d', 
+                    std=0.01,
+                    override=dict(
+                        type='Normal',
+                        name='solo_cate',
+                        std=0.01,
+                        bias_prob=0.01))):
         super(BoxSOLOv2Head, self).__init__(init_cfg=init_cfg)
         self.num_classes = num_classes
         self.seg_num_grids = num_grids
@@ -155,26 +163,6 @@ class BoxSOLOv2Head(BaseModule):
             self.seg_feat_channels, self.seg_feat_channels, 1, padding=0)
 
         self.levelset_bottom = nn.Conv2d(self.seg_feat_channels, 5, 3, padding=1)
-
-    def init_weights(self):
-        super(BoxSOLOv2Head, self).init_weights()
-        for m in self.feature_convs:
-            s=len(m)
-            for i in range(s):
-                if i%2 == 0:
-                    normal_init(m[i].conv, std=0.01)
-
-        for m in self.cate_convs:
-            normal_init(m.conv, std=0.01)
-        for m in self.kernel_convs:
-            normal_init(m.conv, std=0.01)
-
-        bias_cate = bias_init_with_prob(0.01)
-        normal_init(self.solo_cate, std=0.01, bias=bias_cate)
-        normal_init(self.solo_kernel, std=0.01)
-
-        normal_init(self.levelset_bottom, std=0.01)
-        normal_init(self.solo_mask, std=0.01)
 
     def forward(self, feats, eval=False):
         feats = [feat.float() for feat in feats]
