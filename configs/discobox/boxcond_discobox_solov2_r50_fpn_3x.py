@@ -15,7 +15,7 @@ model = dict(
         nms_pre=500,
         score_thr=0.1,
         mask_thr=0.4,
-        update_thr=0.05,
+        filter_thr=0.05,
         kernel='gaussian',  # gaussian/linear
         sigma=2.0,
         max_per_img=100),
@@ -112,7 +112,7 @@ model = dict(
 
 # dataset settings
 dataset_type = 'CocoBoxCondDataset'
-data_root = 'data/coco/'
+data_root = '/mnt/SSD/lwt_workdir/data/coco/'
 train_pipeline = [
     dict(type='LoadImageFromFile'),
     dict(type='LoadAnnotations', with_bbox=True),
@@ -141,7 +141,7 @@ test_pipeline = [
         ])
 ]
 data = dict(
-    samples_per_gpu=2,
+    samples_per_gpu=4,
     workers_per_gpu=2,
     train=dict(
         type=dataset_type,

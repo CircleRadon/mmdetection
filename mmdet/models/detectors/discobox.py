@@ -19,6 +19,7 @@ class DiscoBoxSOLOv2(SingleStageWSInsTSDetector):
                  mask_feat_head,
                  train_cfg=None,
                  test_cfg=None,
-                 pretrained=None):
+                 pretrained=None,
+                 init_cfg=None):
         super(DiscoBoxSOLOv2, self).__init__(backbone, neck, bbox_head, mask_feat_head, train_cfg,
-                                   test_cfg, pretrained)
+                                   test_cfg, pretrained, init_cfg)

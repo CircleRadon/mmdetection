@@ -10,17 +10,17 @@ import torch
 import cv2
 import torch.nn as nn
 import torch.nn.functional as F
-from mmcv.cnn import normal_init
-from mmdet.core import multi_apply
+from mmdet.core import multi_apply, InstanceData, mask_matrix_nms
 from mmcv.ops.roi_align import RoIAlign
 from mmcv import tensor2imgs
+from mmcv.runner import BaseModule
 from mmcv.runner.fp16_utils import force_fp32
 from ..builder import build_loss, HEADS
 
 from torch.cuda.amp import autocast
 
 
-from mmcv.cnn import bias_init_with_prob, ConvModule
+from mmcv.cnn import ConvModule
 import numpy as np
 
 
@@ -440,7 +440,7 @@ class SemanticCorrSolver:
 
 
 @HEADS.register_module()
-class DiscoBoxMaskFeatHead(nn.Module):
+class DiscoBoxMaskFeatHead(BaseModule):
     #@autocast(enabled=False)
     def __init__(self,
                  in_channels,
@@ -449,8 +449,9 @@ class DiscoBoxMaskFeatHead(nn.Module):
                  end_level,
                  num_classes,
                  conv_cfg=None,
-                 norm_cfg=None):
-        super(DiscoBoxMaskFeatHead, self).__init__()
+                 norm_cfg=None,
+                 init_cfg=[dict(type='Normal', layer='Conv2d', std=0.01)]):
+        super(DiscoBoxMaskFeatHead, self).__init__(init_cfg=init_cfg)
 
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -523,12 +524,6 @@ class DiscoBoxMaskFeatHead(nn.Module):
                 norm_cfg=self.norm_cfg),
         )
 
-    #@autocast(enabled=False)
-    def init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                normal_init(m, std=0.01)
-
     @autocast()
     def forward(self, inputs):
         assert len(inputs) == (self.end_level - self.start_level + 1)
@@ -551,126 +546,6 @@ class DiscoBoxMaskFeatHead(nn.Module):
 
         feature_pred = self.conv_pred(feature_add_all_level)
         return feature_pred
-
-
-#@autocast(enabled=False)
-def matrix_nms(seg_masks, cate_labels, cate_scores, kernel='gaussian', sigma=2.0, sum_masks=None):
-    """Matrix NMS for multi-class masks.
-
-    Args:
-        seg_masks (Tensor): shape (n, h, w)
-        cate_labels (Tensor): shape (n), mask labels in descending order
-        cate_scores (Tensor): shape (n), mask scores in descending order
-        kernel (str):  'linear' or 'gauss' 
-        sigma (float): std in gaussian method
-        sum_masks (Tensor): The sum of seg_masks
-
-    Returns:
-        Tensor: cate_scores_update, tensors of shape (n)
-    """
-    n_samples = len(cate_labels)
-    if n_samples == 0:
-        return []
-    if sum_masks is None:
-        sum_masks = seg_masks.sum((1, 2)).float()
-    seg_masks = seg_masks.reshape(n_samples, -1).float()
-    # inter.
-    inter_matrix = torch.mm(seg_masks, seg_masks.transpose(1, 0))
-    # union.
-    sum_masks_x = sum_masks.expand(n_samples, n_samples)
-    # iou.
-    iou_matrix = (inter_matrix / (sum_masks_x + sum_masks_x.transpose(1, 0) - inter_matrix)).triu(diagonal=1)
-    # label_specific matrix.
-    cate_labels_x = cate_labels.expand(n_samples, n_samples)
-    label_matrix = (cate_labels_x == cate_labels_x.transpose(1, 0)).float().triu(diagonal=1)
-
-    # IoU compensation
-    compensate_iou, _ = (iou_matrix * label_matrix).max(0)
-    compensate_iou = compensate_iou.expand(n_samples, n_samples).transpose(1, 0)
-
-    # IoU decay
-    decay_iou = iou_matrix * label_matrix
-
-    # matrix nms
-    if kernel == 'gaussian':
-        decay_matrix = torch.exp(-1 * sigma * (decay_iou ** 2))
-        compensate_matrix = torch.exp(-1 * sigma * (compensate_iou ** 2))
-        decay_coefficient, _ = (decay_matrix / compensate_matrix).min(0)
-    elif kernel == 'linear':
-        decay_matrix = (1-decay_iou)/(1-compensate_iou)
-        decay_coefficient, _ = decay_matrix.min(0)
-    else:
-        raise NotImplementedError
-
-    # update the score.
-    cate_scores_update = cate_scores * decay_coefficient
-    return cate_scores_update
-
-
-#@autocast(enabled=False)
-def multiclass_nms(multi_bboxes,
-                   multi_scores,
-                   score_thr,
-                   nms_cfg,
-                   max_num=-1,
-                   score_factors=None):
-    """NMS for multi-class bboxes.
-
-    Args:
-        multi_bboxes (Tensor): shape (n, #class*4) or (n, 4)
-        multi_scores (Tensor): shape (n, #class), where the 0th column
-            contains scores of the background class, but this will be ignored.
-        score_thr (float): bbox threshold, bboxes with scores lower than it
-            will not be considered.
-        nms_thr (float): NMS IoU threshold
-        max_num (int): if there are more than max_num bboxes after NMS,
-            only top max_num will be kept.
-        score_factors (Tensor): The factors multiplied to scores before
-            applying NMS
-
-    Returns:
-        tuple: (bboxes, labels), tensors of shape (k, 5) and (k, 1). Labels
-            are 0-based.
-    """
-    num_classes = multi_scores.shape[1]
-    bboxes, labels = [], []
-    nms_cfg_ = nms_cfg.copy()
-    nms_type = nms_cfg_.pop('type', 'nms')
-    nms_op = getattr(nms_wrapper, nms_type)
-    for i in range(1, num_classes):
-        cls_inds = multi_scores[:, i] > score_thr
-        if not cls_inds.any():
-            continue
-        # get bboxes and scores of this class
-        if multi_bboxes.shape[1] == 4:
-            _bboxes = multi_bboxes[cls_inds, :]
-        else:
-            _bboxes = multi_bboxes[cls_inds, i * 4:(i + 1) * 4]
-        _scores = multi_scores[cls_inds, i]
-        if score_factors is not None:
-            _scores *= score_factors[cls_inds]
-        cls_dets = torch.cat([_bboxes, _scores[:, None]], dim=1)
-        cls_dets, _ = nms_op(cls_dets, **nms_cfg_)
-        cls_labels = multi_bboxes.new_full((cls_dets.shape[0], ),
-                                           i - 1,
-                                           dtype=torch.long)
-        bboxes.append(cls_dets)
-        labels.append(cls_labels)
-    if bboxes:
-        bboxes = torch.cat(bboxes)
-        labels = torch.cat(labels)
-        if bboxes.shape[0] > max_num:
-            _, inds = bboxes[:, -1].sort(descending=True)
-            inds = inds[:max_num]
-            bboxes = bboxes[inds]
-            labels = labels[inds]
-    else:
-        bboxes = multi_bboxes.new_zeros((0, 5))
-        labels = multi_bboxes.new_zeros((0, ), dtype=torch.long)
-
-    return bboxes, labels
-
-
 
 #@autocast(enabled=False)
 def center_of_mass(bitmasks):
@@ -816,7 +691,7 @@ class MeanField(nn.Module):
 
 
 @HEADS.register_module()
-class DiscoBoxSOLOv2Head(nn.Module):
+class DiscoBoxSOLOv2Head(BaseModule):
 
     #@autocast(enabled=False)
     def __init__(self,
@@ -837,8 +712,17 @@ class DiscoBoxSOLOv2Head(nn.Module):
                  conv_cfg=None,
                  norm_cfg=None,
                  use_dcn_in_tower=False,
-                 type_dcn=None):
-        super(DiscoBoxSOLOv2Head, self).__init__()
+                 type_dcn=None,
+                 init_cfg=dict(
+                    type='Normal', 
+                    layer='Conv2d', 
+                    std=0.01,
+                    override=dict(
+                        type='Normal',
+                        name='solo_cate',
+                        std=0.01,
+                        bias_prob=0.01))):
+        super(DiscoBoxSOLOv2Head, self).__init__(init_cfg=init_cfg)
         self.fp16_enabled = False
         self.num_classes = num_classes
         self.seg_num_grids = num_grids
@@ -951,16 +835,6 @@ class DiscoBoxSOLOv2Head(nn.Module):
 
         self.solo_kernel = nn.Conv2d(
             self.seg_feat_channels, self.kernel_out_channels, 3, padding=1)
-
-    #@autocast(enabled=False)
-    def init_weights(self):
-        for m in self.cate_convs:
-            normal_init(m.conv, std=0.01)
-        for m in self.kernel_convs:
-            normal_init(m.conv, std=0.01)
-        bias_cate = bias_init_with_prob(0.01)
-        normal_init(self.solo_cate, std=0.01, bias=bias_cate)
-        normal_init(self.solo_kernel, std=0.01)
 
     def forward(self, feats, eval=False):
         feats = [feat.float() for feat in feats]
@@ -1715,16 +1589,17 @@ class DiscoBoxSOLOv2Head(nn.Module):
                 kernel_preds[i][img_id].permute(1, 2, 0).view(-1, self.kernel_out_channels).detach()
                                 for i in range(num_levels)
             ]
-            img_shape = img_metas[img_id]['img_shape']
-            scale_factor = img_metas[img_id]['scale_factor']
-            ori_shape = img_metas[img_id]['ori_shape']
 
             cate_pred_list = torch.cat(cate_pred_list, dim=0)
             kernel_pred_list = torch.cat(kernel_pred_list, dim=0)
 
-            result = self.get_seg_single(cate_pred_list, seg_pred_list, kernel_pred_list,
-                                         featmap_size, img_shape, ori_shape, scale_factor,
-                                         cfg, rescale, img=img)
+            result = self.get_seg_single(
+                cate_pred_list, 
+                seg_pred_list, 
+                kernel_pred_list,
+                featmap_size, 
+                img_meta=img_metas[img_id],
+                cfg=cfg)
             result_list.append(result)
         return result_list
 
@@ -1735,18 +1610,20 @@ class DiscoBoxSOLOv2Head(nn.Module):
                        seg_preds,
                        kernel_preds,
                        featmap_size,
-                       img_shape,
-                       ori_shape,
-                       scale_factor,
-                       cfg,
-                       rescale=False,
-                       img=None,
-                       debug=False):
+                       img_meta,
+                       cfg):
+
+        def empty_results(results, cls_scores):
+            results.scores = cls_scores.new_ones(0)
+            results.masks = cls_scores.new_zeros(0, *results.ori_shape[:2])
+            results.labels = cls_scores.new_ones(0)
+            return results
 
         assert len(cate_preds) == len(kernel_preds)
-        bbox_results = [[] for _ in range(self.num_classes)]
-        mask_results = [[] for _ in range(self.num_classes)]
-        score_results = [[] for _ in range(self.num_classes)]
+        results = InstanceData(img_meta)
+
+        img_shape = results.img_shape
+        ori_shape = results.ori_shape
 
         # overall info.
         h, w, _ = img_shape
@@ -1756,8 +1633,7 @@ class DiscoBoxSOLOv2Head(nn.Module):
         inds = (cate_preds > cfg.score_thr)
         cate_scores = cate_preds[inds]
         if len(cate_scores) == 0:
-            bbox_results = [np.zeros((0, 5)) for bbox_result in bbox_results]
-            return bbox_results, (mask_results, score_results)
+            return empty_results(results, cate_scores)
 
         # cate_labels & kernel_preds
         inds = inds.nonzero()
@@ -1786,8 +1662,7 @@ class DiscoBoxSOLOv2Head(nn.Module):
         # filter.
         keep = sum_masks > strides
         if keep.sum() == 0:
-            bbox_results = [np.zeros((0, 5)) for bbox_result in bbox_results]
-            return bbox_results, (mask_results, score_results)
+            return empty_results(results, cate_scores)
 
         seg_masks = seg_masks[keep, ...]
         seg_preds = seg_preds[keep, ...]
@@ -1799,37 +1674,19 @@ class DiscoBoxSOLOv2Head(nn.Module):
         seg_scores = (seg_preds * seg_masks.float()).sum((1, 2)) / sum_masks
         cate_scores *= seg_scores
 
-        # sort and keep top nms_pre
-        sort_inds = torch.argsort(cate_scores, descending=True)
-        if len(sort_inds) > cfg.nms_pre:
-            sort_inds = sort_inds[:cfg.nms_pre]
-        seg_masks = seg_masks[sort_inds, :, :]
-        seg_preds = seg_preds[sort_inds, :, :]
-        sum_masks = sum_masks[sort_inds]
-        cate_scores = cate_scores[sort_inds]
-        cate_labels = cate_labels[sort_inds]
-
         # Matrix NMS
-        cate_scores = matrix_nms(seg_masks, cate_labels, cate_scores,
-                                    kernel=cfg.kernel,sigma=cfg.sigma, sum_masks=sum_masks)
+        cate_scores, labels, _, keep_inds  = mask_matrix_nms(
+            seg_masks, 
+            cate_labels, 
+            cate_scores,
+            filter_thr=cfg.filter_thr,
+            nms_pre=cfg.nms_pre,
+            max_num=cfg.max_per_img,
+            kernel=cfg.kernel, 
+            sigma=cfg.sigma, 
+            mask_area=sum_masks)
 
-        # filter.
-        keep = cate_scores >= cfg.update_thr
-        if keep.sum() == 0:
-            bbox_results = [np.zeros((0, 5)) for bbox_result in bbox_results]
-            return bbox_results, (mask_results, score_results)
-        seg_preds = seg_preds[keep, :, :]
-        cate_scores = cate_scores[keep]
-        cate_labels = cate_labels[keep]
-
-        # sort and keep top_k
-        sort_inds = torch.argsort(cate_scores, descending=True)
-        if len(sort_inds) > cfg.max_per_img:
-            sort_inds = sort_inds[:cfg.max_per_img]
-        seg_preds = seg_preds[sort_inds, :, :]
-        cate_scores = cate_scores[sort_inds]
-        cate_labels = cate_labels[sort_inds]
-
+        seg_preds = seg_preds[keep_inds]
         seg_preds = F.interpolate(seg_preds.unsqueeze(0),
                                   size=upsampled_size_out,
                                   mode='bilinear')[:, :, :h, :w]
@@ -1839,15 +1696,9 @@ class DiscoBoxSOLOv2Head(nn.Module):
                                mode='bilinear').squeeze(0)
         seg_masks = seg_masks > cfg.mask_thr ##
 
-        for cate_label, cate_score, seg_mask in zip(cate_labels, cate_scores, seg_masks):
-            if seg_mask.sum() > 0:
-                mask_results[cate_label].append(seg_mask.cpu())
-                score_results[cate_label].append(cate_score.cpu())
-                ys, xs = torch.where(seg_mask)
-                min_x, min_y, max_x, max_y = xs.min().cpu().data.numpy(), ys.min().cpu().data.numpy(), xs.max().cpu().data.numpy(), ys.max().cpu().data.numpy()
-                bbox_results[cate_label].append([min_x, min_y, max_x+1, max_y+1, cate_score.cpu().data.numpy()])
-
-        bbox_results = [np.array(bbox_result) if len(bbox_result) > 0 else np.zeros((0, 5)) for bbox_result in bbox_results ]
-
-
-        return bbox_results, (mask_results, score_results)
+        results.masks = seg_masks
+        results.labels = labels
+        results.scores = cate_scores
+        print("results")
+        
+        return results

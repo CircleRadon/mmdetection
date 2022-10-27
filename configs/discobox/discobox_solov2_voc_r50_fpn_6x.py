@@ -15,7 +15,7 @@ model = dict(
         nms_pre=500,
         score_thr=0.1,
         mask_thr=0.5,
-        update_thr=0.05,
+        filter_thr=0.05,
         kernel='gaussian',  # gaussian/linear
         sigma=2.0,
         max_per_img=100),
@@ -111,8 +111,8 @@ model = dict(
     )
 
 # dataset settings
-dataset_type = 'VOCCocoformatDataset'
-data_root = 'data/voc/'
+dataset_type = 'PascalVOCDataset'
+data_root = '/mnt/SSD/lwt_workdir/data/VOC/'
 train_pipeline = [
     dict(type='LoadImageFromFile'),
     dict(type='LoadAnnotations', with_bbox=True),
@@ -140,22 +140,22 @@ test_pipeline = [
         ])
 ]
 data = dict(
-    samples_per_gpu=2,
-    workers_per_gpu=2,
+    samples_per_gpu=4,
+    workers_per_gpu=4,
     train=dict(
         type=dataset_type,
-        ann_file=data_root + 'voc_2012_train_aug_cocostyle.json',
-        img_prefix=data_root + 'VOCdevkit/VOC2012/JPEGImages',
+        ann_file=data_root + 'annotations/voc_2012_train.json',
+        img_prefix=data_root + 'train/',
         pipeline=train_pipeline),
     val=dict(
         type=dataset_type,
-        ann_file=data_root + 'voc_2012_val_cocostyle.json',
-        img_prefix=data_root + 'VOCdevkit/VOC2012/JPEGImages',
+        ann_file=data_root + 'annotations/voc_2012_val.json',
+        img_prefix=data_root + 'val/',
         pipeline=test_pipeline),
     test=dict(
         type=dataset_type,
-        ann_file=data_root + 'voc_2012_val_cocostyle.json',
-        img_prefix=data_root + 'VOCdevkit/VOC2012/JPEGImages',
+        ann_file=data_root + 'annotations/voc_2012_val.json',
+        img_prefix=data_root + 'val/',
         pipeline=test_pipeline))
 # optimizer
 optimizer = dict(type='SGD', lr=0.01, momentum=0.9, weight_decay=0.0001)

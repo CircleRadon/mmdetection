@@ -7,11 +7,12 @@
 
 import torch.nn as nn
 import torch
-
-from mmdet.core import bbox2result
+import numpy as np
+import warnings
 from .. import builder
 from ..builder import DETECTORS
 from .base import BaseDetector
+from collections import OrderedDict
 
 from mmcv.runner import auto_fp16
 
@@ -26,8 +27,13 @@ class SingleStageWSInsDetector(BaseDetector):
                  mask_feat_head=None,
                  train_cfg=None,
                  test_cfg=None,
-                 pretrained=None):
-        super(SingleStageWSInsDetector, self).__init__()
+                 pretrained=None,
+                 init_cfg=None):
+        if pretrained:
+            warnings.warn('DeprecationWarning: pretrained is deprecated, '
+                          'please use "init_cfg" instead')
+            backbone.pretrained = pretrained
+        super(SingleStageWSInsDetector, self).__init__(init_cfg=init_cfg)
         self.backbone = builder.build_backbone(backbone)
         if neck is not None:
             self.neck = builder.build_neck(neck)
@@ -37,23 +43,8 @@ class SingleStageWSInsDetector(BaseDetector):
         self.bbox_head = builder.build_head(bbox_head)
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
-        self.init_weights(pretrained=pretrained)
         self.cnt = 0
         self.avg_loss_ins = 2
-
-    def init_weights(self, pretrained=None):
-        super(SingleStageWSInsDetector, self).init_weights(pretrained)
-        self.backbone.init_weights(pretrained=pretrained)
-        if self.with_neck:
-            if isinstance(self.neck, nn.Sequential):
-                for m in self.neck:
-                    m.init_weights()
-            else:
-                self.neck.init_weights()
-        if isinstance(self.mask_feat_head, nn.Sequential):
-            for m in self.mask_feat_head:
-                m.init_weights()
-        self.bbox_head.init_weights()
 
     def extract_feat(self, img):
         x = self.backbone(img)
@@ -83,7 +74,7 @@ class SingleStageWSInsDetector(BaseDetector):
         loss_inputs = outs + (mask_feat_pred, gt_bboxes, gt_labels, gt_masks, img_metas, self.train_cfg)
         losses = self.bbox_head.loss(
             *loss_inputs, img=img, gt_bboxes_ignore=gt_bboxes_ignore,
-            use_ts_loss=self.avg_loss_ins<0.4)
+            use_loss_ts=self.avg_loss_ins<0.4)
         self.avg_loss_ins = self.avg_loss_ins * 0.99 + float(losses['loss_ins']) * 0.01
         return losses
 
@@ -95,8 +86,28 @@ class SingleStageWSInsDetector(BaseDetector):
             x[self.mask_feat_head.
               start_level:self.mask_feat_head.end_level + 1])
         seg_inputs = outs + (mask_feat_pred, img_meta, self.test_cfg, rescale)
-        results = self.bbox_head.get_seg(*seg_inputs, img=img)
-        return results
+        results_list = self.bbox_head.get_seg(*seg_inputs, img=img)
+        format_results_list = []
+        for results in results_list:
+            format_results_list.append(self.format_results(results))
+        return format_results_list
+    
+    def format_results(self, results):
+        bbox_results = [[] for _ in range(self.bbox_head.num_classes)]
+        mask_results = [[] for _ in range(self.bbox_head.num_classes)]
+        score_results = [[] for _ in range(self.bbox_head.num_classes)]
+
+        for cate_label, cate_score, seg_mask in zip(results.labels, results.scores, results.masks):
+            if seg_mask.sum() > 0:
+                mask_results[cate_label].append(seg_mask.cpu())
+                score_results[cate_label].append(cate_score.cpu())
+                ys, xs = torch.where(seg_mask)
+                min_x, min_y, max_x, max_y = xs.min().cpu().data.numpy(), ys.min().cpu().data.numpy(), xs.max().cpu().data.numpy(), ys.max().cpu().data.numpy()
+                bbox_results[cate_label].append([min_x, min_y, max_x+1, max_y+1, cate_score.cpu().data.numpy()])
+
+        bbox_results = [np.array(bbox_result) if len(bbox_result) > 0 else np.zeros((0, 5)) for bbox_result in bbox_results]
+
+        return bbox_results, (mask_results, score_results)
 
     def aug_test(self, imgs, img_metas, rescale=False):
         raise NotImplementedError
@@ -118,8 +129,13 @@ class SingleStageWSInsTeacherDetector(SingleStageWSInsDetector):
         """
         if teacher_momentum is None:
             teacher_momentum = self.teacher_momentum
-        for param_q, param_k in zip(cur_model.parameters(), self.parameters()):
-            param_k.data = param_k.data * teacher_momentum + param_q.data * (1. - teacher_momentum)
+        cur_state_dict = cur_model.state_dict()
+        self_state_dict = self.state_dict()
+        weight_keys = list(cur_state_dict.keys())
+        fed_state_dict = OrderedDict()
+        for key in weight_keys:
+            fed_state_dict[key] = cur_state_dict[key]* (1. - teacher_momentum)+self_state_dict[key]* teacher_momentum
+        self.load_state_dict(fed_state_dict)
 
 @DETECTORS.register_module()
 class SingleStageWSInsTSDetector(SingleStageWSInsDetector):
@@ -131,15 +147,20 @@ class SingleStageWSInsTSDetector(SingleStageWSInsDetector):
                  mask_feat_head=None,
                  train_cfg=None,
                  test_cfg=None,
-                 pretrained=None):
+                 pretrained=None,
+                 init_cfg=None):
+        if pretrained:
+            warnings.warn('DeprecationWarning: pretrained is deprecated, '
+                          'please use "init_cfg" instead')
+            backbone.pretrained = pretrained
         super(SingleStageWSInsTSDetector, self).__init__(backbone, neck, bbox_head, mask_feat_head,
-                                                         train_cfg, test_cfg, pretrained)
+                                                         train_cfg, test_cfg, pretrained, init_cfg)
 
         self.use_ind_teacher = bbox_head['loss_ts']['use_ind_teacher']
         if self.use_ind_teacher:
             self.tsw = SingleStageWSInsTeacherDetectorWrapper(
                             SingleStageWSInsTeacherDetector(backbone, neck, bbox_head, mask_feat_head,
-                                                            train_cfg, test_cfg, pretrained))
+                                                            train_cfg, test_cfg, pretrained, init_cfg))
             self.tsw.teacher.eval()
             self.tsw.teacher.teacher_momentum = bbox_head['loss_ts']['momentum']
         self.use_corr = bbox_head.get('loss_corr', None) is not None
@@ -258,5 +279,25 @@ class BoxConditionalInference(SingleStageWSInsDetector):
             x[self.mask_feat_head.
               start_level:self.mask_feat_head.end_level + 1])
         seg_inputs = outs + (mask_feat_pred, img_meta, self.test_cfg, rescale)
-        results = self.bbox_head.get_seg(*seg_inputs, img=img, gt_bboxes=gt_bboxes, gt_labels=gt_labels, gt_masks=gt_masks)
-        return results
+        results_list = self.bbox_head.get_seg(*seg_inputs, img=img, gt_bboxes=gt_bboxes, gt_labels=gt_labels, gt_masks=gt_masks)
+        format_results_list = []
+        for results in results_list:
+            format_results_list.append(self.format_results(results))
+        return format_results_list
+
+    def format_results(self, results):
+        bbox_results = [[] for _ in range(self.bbox_head.num_classes)]
+        mask_results = [[] for _ in range(self.bbox_head.num_classes)]
+        score_results = [[] for _ in range(self.bbox_head.num_classes)]
+
+        for cate_label, cate_score, seg_mask in zip(results.labels, results.scores, results.masks):
+            if seg_mask.sum() > 0:
+                mask_results[cate_label].append(seg_mask.cpu())
+                score_results[cate_label].append(cate_score.cpu())
+                ys, xs = torch.where(seg_mask)
+                min_x, min_y, max_x, max_y = xs.min().cpu().data.numpy(), ys.min().cpu().data.numpy(), xs.max().cpu().data.numpy(), ys.max().cpu().data.numpy()
+                bbox_results[cate_label].append([min_x, min_y, max_x+1, max_y+1, cate_score.cpu().data.numpy()])
+
+        bbox_results = [np.array(bbox_result) if len(bbox_result) > 0 else np.zeros((0, 5)) for bbox_result in bbox_results]
+
+        return bbox_results, (mask_results, score_results)
